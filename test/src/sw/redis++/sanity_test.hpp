@@ -381,6 +381,30 @@ void SanityTest<RedisInstance>::_test_uri() {
             && opts.db == 0 && opts.type == ConnectionType::TCP,
             "failed to test uri construction");
 
+    opts = ConnectionOptions("tcp://127.0.0.1:7000/1?keep_alive=true&connect_timeout=300ms&socket_timeout=1s");
+    REDIS_ASSERT(opts.user == "default" && opts.password == ""
+            && opts.host == "127.0.0.1" && opts.port == 7000
+            && opts.db == 1 && opts.type == ConnectionType::TCP
+            && opts.keep_alive && opts.connect_timeout == std::chrono::milliseconds(300)
+            && opts.socket_timeout == std::chrono::seconds(1),
+            "failed to test uri construction");
+
+    opts = ConnectionOptions("tcp://pass@127.0.0.1:7000?connect_timeout=300ms&socket_timeout=1s");
+    REDIS_ASSERT(opts.user == "default" && opts.password == "pass"
+            && opts.host == "127.0.0.1" && opts.port == 7000
+            && opts.db == 0 && opts.type == ConnectionType::TCP
+            && opts.connect_timeout == std::chrono::milliseconds(300)
+            && opts.socket_timeout == std::chrono::seconds(1),
+            "failed to test uri construction");
+
+    opts = ConnectionOptions("tcp://user:pass@127.0.0.1?connect_timeout=300ms&socket_timeout=1s&keep_alive=false");
+    REDIS_ASSERT(opts.user == "user" && opts.password == "pass"
+            && opts.host == "127.0.0.1" && opts.port == 6379
+            && opts.db == 0 && opts.type == ConnectionType::TCP
+            && opts.connect_timeout == std::chrono::milliseconds(300)
+            && opts.socket_timeout == std::chrono::seconds(1) && !opts.keep_alive,
+            "failed to test uri construction");
+
     opts = ConnectionOptions("unix://user:pass@path/to/unix/domain.sock/1");
     REDIS_ASSERT(opts.user == "user" && opts.password == "pass"
             && opts.path == "path/to/unix/domain.sock"
@@ -409,6 +433,21 @@ void SanityTest<RedisInstance>::_test_uri() {
     REDIS_ASSERT(opts.user == "default" && opts.password == ""
             && opts.path == "path/to/unix/domain.sock"
             && opts.db == 0 && opts.type == ConnectionType::UNIX,
+            "failed to test uri construction");
+
+    opts = ConnectionOptions("unix://path/to/unix/domain.sock?keep_alive=false&socket_timeout=100ms");
+    REDIS_ASSERT(opts.user == "default" && opts.password == ""
+            && opts.path == "path/to/unix/domain.sock"
+            && opts.db == 0 && opts.type == ConnectionType::UNIX
+            && !opts.keep_alive && opts.socket_timeout == std::chrono::milliseconds(100),
+            "failed to test uri construction");
+
+    opts = ConnectionOptions("unix://user:pass@path/to/unix/domain.sock/1?connect_timeout=1s&keep_alive=true&socket_timeout=100ms");
+    REDIS_ASSERT(opts.user == "user" && opts.password == "pass"
+            && opts.path == "path/to/unix/domain.sock"
+            && opts.db == 1 && opts.type == ConnectionType::UNIX
+            && opts.connect_timeout == std::chrono::seconds(1) && opts.keep_alive
+            && opts.socket_timeout == std::chrono::milliseconds(100),
             "failed to test uri construction");
 }
 
