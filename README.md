@@ -2,6 +2,7 @@
 
 - [Overview](#overview)
     - [Features](#features)
+    - [Branches](#branches)
 - [Installation](#installation)
     - [Install hiredis](#install-hiredis)
     - [Install redis-plus-plus](#install-redis-plus-plus)
@@ -41,6 +42,14 @@ This is a C++ client for Redis. It's based on [hiredis](https://github.com/redis
 - Redis Sentinel.
 - STL-like interfaces.
 - Generic command interface.
+- Redis Stream.
+- Redlock.
+- Redis ACL.
+- TLS/SSL support.
+
+### Branches
+
+The master branch is the stable branch, which passes all tests. The dev branch is unstable. If you want to contribute, please create pull request on dev branch.
 
 ## Installation
 
@@ -126,7 +135,7 @@ clang version 8.0.1-3build1 (tags/RELEASE_801/final)
 Apple clang version 11.0.0 (clang-1100.0.33.12)
 ```
 
-If you build *redis-plus-plus* with `-DREDIS_PLUS_PLUS_BUILD_TEST=ON` (the default behavior), you'll get a test program in *compile/test* directory: *compile/test/test_redis++*.
+If you build *redis-plus-plus* with `-DREDIS_PLUS_PLUS_BUILD_TEST=ON` (the default behavior, and you can disable building test with `-DREDIS_PLUS_PLUS_BUILD_TEST=OFF`), you'll get a test program in *compile/test* directory: *compile/test/test_redis++*.
 
 In order to run the tests, you need to set up a Redis instance, and a Redis Cluster. Since the test program will send most of Redis commands to the server and cluster, you need to set up Redis of the latest version (by now, it's 5.0). Otherwise, the tests might fail. For example, if you set up Redis 4.0 for testing, the test program will fail when it tries to send the `ZPOPMAX` command (a Redis 5.0 command) to the server. If you want to run the tests with other Redis versions, you have to comment out commands that haven't been supported by your Redis, from test source files in *redis-plus-plus/test/src/sw/redis++/* directory. Sorry for the inconvenience, and I'll fix this problem to make the test program work with any version of Redis in the future.
 
@@ -156,11 +165,10 @@ Similarly, if you only want to run tests with Redis Cluster, just specify *clust
 ./compile/test/test_redis++ -a auth -n cluster_node -c cluster_port
 ```
 
-The test program will test running *redis-plus-plus* in multi-threads environment, and this test will cost a long time. If you want to skip it (not recommended), just comment out the following lines in *test/src/sw/redis++/test_main.cpp* file.
+By default, the test program will not test running *redis-plus-plus* in multi-threads environment. If you want to do multi-threads test, which might cost a long time, you can specify the *-m* option:
 
-```C++
-sw::redis::test::ThreadsTest threads_test(opts, cluster_node_opts);
-threads_test.run();
+```
+./compile/test/test_redis++ -h host -p port -a auth -n cluster_node -c cluster_port -m
 ```
 
 If all tests have been passed, the test program will print the following message:
@@ -497,11 +505,22 @@ Redis redis1(connection_options);
 ConnectionPoolOptions pool_options;
 pool_options.size = 3;  // Pool size, i.e. max number of connections.
 
+// Optional. Max time to wait for a connection. 0ms by default, which means wait forever.
+// Say, the pool size is 3, while 4 threds try to fetch the connection, one of them will be blocked.
+pool_options.wait_timeout = std::chrono::milliseconds(100);
+
+// Optional. Max lifetime of a connection. 0ms by default, which means never expire the connection.
+// If the connection has been created for a long time, i.e. more than `connection_lifetime`,
+// it will be expired and reconnected.
+pool_options.connection_lifetime = std::chrono::minutes(10);
+
 // Connect to Redis server with a connection pool.
 Redis redis2(connection_options, pool_options);
 ```
 
-See [ConnectionOptions](https://github.com/sewenew/redis-plus-plus/blob/master/src/sw/redis%2B%2B/connection.h#L40) and [ConnectionPoolOptions](https://github.com/sewenew/redis-plus-plus/blob/master/src/sw/redis%2B%2B/connection_pool.h#L30) for more options.
+**NOTE**: if you set `ConnectionOptions::socket_timeout`, and try to call blocking commands, e.g. `Redis::brpop`, `Redis::blpop`, `Redis::bzpopmax`, `Redis::bzpopmin`, you must ensure that `ConnectionOptions::socket_timeout` is larger than the timeout specified with these blocking commands. Otherwise, you might get `TimeoutError`, and lose message.
+
+See [ConnectionOptions](https://github.com/sewenew/redis-plus-plus/blob/master/src/sw/redis%2B%2B/connection.h#L40) and [ConnectionPoolOptions](https://github.com/sewenew/redis-plus-plus/blob/master/src/sw/redis%2B%2B/connection_pool.h#L30) for more options. Also see [issue 80](https://github.com/sewenew/redis-plus-plus/issues/80) for discussion on connection pool.
 
 **NOTE**: `Redis` class is movable but NOT copyable.
 
@@ -601,6 +620,50 @@ for (auto idx = 0; idx < 100; ++idx) {
     redis.set("key", "val");
 }
 ```
+
+#### TLS/SSL Support
+
+*redis-plus-plus* also has TLS support. However, in order to use this feature, you need to enable it when building *hiredis* and *redis-plus-plus*.
+
+##### Enable TLS/SSL support
+
+When building *hiredis* with TLS support, you need to download *hiredis* of version *v1.0.0* or latter, and specify `USE_SSL=1` flag:
+
+```
+make PREFIX=/non/default/path USE_SSL=1
+
+make PREFIX=/non/default/path USE_SSL=1 install
+```
+
+Then you can build *redis-plus-plus* to enable TLS support by specifying the `-DREDIS_PLUS_PLUS_USE_TLS=ON` option:
+
+```
+cmake -DREDIS_PLUS_PLUS_USE_TLS=ON -DCMAKE_BUILD_TYPE=Release ..
+```
+
+##### Connection Options
+
+In order to connect to Redis with TLS support, you need to specify the following connection options:
+
+```
+ConnectionOptions opts;
+opts.host = "127.0.0.1";
+opts.port = 6379;
+
+opts.tls.enabled = true;    // Required. `false` by default.
+opts.tls.cert = "/path/to/client/certificate";  // Optional
+opts.tls.key = "/path/to/private/key/file"; // Optional
+opts.tls.cacert = "/path/to/CA/certificate/file";   // Optional
+opts.tls.sni = "server-name-indication";    // Optional
+```
+
+Although `tls.cert` and `tls.key` are optional, if you specify one of them, you must also specify the other. Instead of specifying `tls.cacert`, you can also specify `tls.cacertdir` to the directory where certificates are stored.
+
+These options are the same as `redis-cli`'s TLS related command line arguments, so you can also run `redis-cli --help` to get the detailed explanation of these options.
+
+Then you can use this `ConnectionOptions` to create a `Redis` object to connect to Redis server with TLS support.
+
+**NOTE**: When building your application code, you also need to link it with `libhiredis.a`, `libhiredis_ssl.a`, `libredis++.a` (or the corresponding shared libraries), `-lssl` and `-lcrypto`.
 
 ### Send Command to Redis Server
 
@@ -1349,9 +1412,9 @@ Redis redis(connection_options, pool_options);
 auto pipe = redis.pipeline();
 ```
 
-When creating a `Pipeline` object, `Redis::pipeline` method creates a new connection to Redis server. This connection is NOT picked from the connection pool, but a newly created connection. This connection has the same `ConnectionOptions` as other connections in the connection pool. `Pipeline` object maintains the new connection, and all piped commands are sent through this connection.
+When creating a `Pipeline` object, by default, `Redis::pipeline` method creates a new connection to Redis server. This connection is NOT picked from the connection pool, but a newly created connection. This connection has the same `ConnectionOptions` as other connections in the connection pool. `Pipeline` object maintains the new connection, and all piped commands are sent through this connection.
 
-**NOTE**: Creating a `Pipeline` object is NOT cheap, since it creates a new connection. So you'd better reuse the `Pipeline` object as much as possible.
+**NOTE**: By default, creating a `Pipeline` object is NOT cheap, since it creates a new connection. So you'd better reuse the `Pipeline` object as much as possible. Check [this](#create-pipeline-without-creating-new-connection) to see how to create a `Pipeline` object without creating a new connection.
 
 #### Send Commands
 
@@ -1412,6 +1475,113 @@ If any of `Pipeline`'s method throws an exception other than `ReplyError`, the `
 
 `Pipeline` is NOT thread-safe. If you want to call its member functions in multi-thread environment, you need to synchronize between threads manually.
 
+#### Create Pipeline Without Creating New Connection
+
+**YOU MUST CAREFULLY READ ALL WORDS IN THIS SECTION AND THE VERY IMPORTANT NOTES BEFORE USING THIS FEATURE!!!**
+
+In fact, you can also create a `Pipeline` object with a connection from the underlying connection pool, so that calling `Redis::pipeline` method can be much cheaper (since it doesn't need to create a new connection).
+
+The prototype of `Redis::pipeline` is as follows: `Pipeline pipeline(bool new_connection = true);`. If `new_connection` is false, the `Pipeline` object will be created with a connection from the underlying pool.
+
+```
+ConnectionOptions connection_options;
+ConnectionPoolOptions pool_options;
+
+Redis redis(connection_options, pool_options);
+
+// Create a Pipeline without creating a new connection.
+auto pipe = redis.pipeline(false);
+```
+
+##### VERY IMPORTANT NOTES
+
+However, in this case, you MUST be very careful, otherwise, you might get bad performance or even dead lock. Because when you run command with `Pipeline` object, it will hold the connection until `Pipeline::exec`, `Pipeline::discard` or `Pipeline`'s destructor is called (the connection will also be released if any method of `Pipeline` throws `Exception`). If the `Pipeline` object holds the connection for a long time, other `Redis` methods might not be able to get a connection from the underlying pool.
+
+Check the following dead lock example:
+
+```
+// By defaul, create a `Redis` object with only ONE connection in pool.
+// Also by default, the `ConnectionPoolOptions::wait_timeout` is 0ms,
+// which means if the pool is empty, `Redis` method will be blocked until
+// the pool is not empty.
+Redis redis("tcp://127.0.0.1");
+
+// Create a `Pipeline` with a connection in the underlying pool.
+// In fact, the connection hasn't been fetched from the pool
+// until some method of `Pipeline` has been called.
+auto pipe = redis.pipeline(false);
+
+// Now the `Pipeline` object fetches a connection from the pool.
+pipe.set("key1", "val");
+
+// `Pipeline` object still holds the connection until `Pipeline::exec`,
+// `Pipeline::discard` or the destructor is called.
+pipe.set("key2", "val");
+
+// Try to send a command with `Redis` object.
+// However, the pool is empty, since the `Pipeline` object still holds
+// the connection, and this call will be blocked forever.
+// DEAD LOCK!!!
+redis.get("key");
+
+// NEVER goes here.
+pipe.exec();
+```
+
+**BEST PRACTICE**:
+
+When creating `Pipeline` without creating a new connection:
+
+- Always set `ConnectionPoolOptions::wait_timeout` larger than 0ms (i.e. when pool is empty, never block forever).
+- Avoid doing slow operation between `Pipeline`'s methods.
+- Better chain `Pipeline` methods and the `Pipeline::exec` in one statements.
+- Better leave `Pipeline` related code in a block scope.
+
+```
+ConnectionOptions opts;
+opts.host = "127.0.0.1";
+opts.port = 6379;
+opts.socket_timeout = std::chrono::milliseconds(50);
+
+ConnectionPoolOptions pool_opts;
+pool_opts.size = 3;
+
+// Always set `wait_timeout` larger than 0ms.
+pool_opts.wait_timeout = std::chrono::milliseconds(50);
+
+auto redis = Redis(opts, pool_opts);
+
+{
+    // Better put `Pipeline` related code in a block scope.
+    auto pipe = redis.pipeline(false);
+
+    pipe.set("key1", "val");
+
+    // DON'T run slow operations here, since `Pipeline` object still holds
+    // the connection, other threads using this `Redis` object, might be blocked.
+
+    pipe.set("key2", "val");
+
+    // When `Pipeline::exec` finishes, `Pipeline` releases the connection, and returns it to pool.
+    auto replies = pipe.exec();
+
+    // This is even better, i.e. chain `Pipeline` methods with `Pipeline::exec`.
+    replies = pipe.set("key1", "val").set("key2", "val").exec();
+}
+
+for (auto i = 0; i < 10; ++i) {
+    // This operation, i.e. creating a `Pipeline` object with connection in pool, is cheap
+    auto pipe = redis.pipeline(false);
+
+    // Fetch a connection from the underlying pool, and hold it.
+    pipe.set("key1", "val").set("key2", "val");
+
+    // Although `Pipeline::exec` and `Pipeline::discard` haven't been called,
+    // when `Pipeline`'s destructor is called, the connection will also be
+    // returned to the pool.
+}
+```
+
 ### Transaction
 
 [Transaction](https://redis.io/topics/transactions) is used to make multiple commands runs atomically.
@@ -1431,7 +1601,7 @@ auto tx = redis.transaction();
 
 As the `Pipeline` class, `Transaction` maintains a newly created connection to Redis. This connection has the same `ConnectionOptions` as the `Redis` object.
 
-**NOTE**: Creating a `Transaction` object is NOT cheap, since it creates a new connection. So you'd better reuse the `Transaction` as much as possible.
+**NOTE**: Creating a `Transaction` object is NOT cheap, since it creates a new connection. So you'd better reuse the `Transaction` as much as possible. Check [this](#create-transaction-without-creating-new-connection) to see how to create a `Transaction` object without creating a new connection.
 
 Also you don't need to send [MULTI](https://redis.io/commands/multi) command to Redis. `Transaction` will do that for you automatically.
 
@@ -1543,6 +1713,100 @@ while (true) {
 }
 ```
 
+**NOTE**: in the example above, we create `Transaction` object outside the while loop, in order to avoid creating new connection again and again.
+
+#### Create Transaction Without Creating New Connection
+
+**NOTE**: YOU MUST CAREFULLY READ ALL WORDS AND THE VERY IMPORTANT NOTES LINK IN THIS SECTION BEFORE USING THIS FEATURE!!!
+
+In fact, you can also create a `transaction` object with a connection from the underlying connection pool, so that calling `Redis::transaction` method can be much cheaper (since it doesn't need to create a new connection).
+
+The prototype of `Redis::transaction` is as follows: `Transaction transaction(bool piped = false, bool new_connection = true);`. If `new_connection` is false, the `Transaction` object will be created with a connection from the underlying pool.
+
+```
+ConnectionOptions connection_options;
+ConnectionPoolOptions pool_options;
+
+Redis redis(connection_options, pool_options);
+
+// Create a Transaction without creating a new connection.
+auto tx = redis.transaction(false, false);
+```
+
+However, in this case, you MUST be very careful, otherwise, you might get bad performance or even dead lock. Please carefully check the similar pipeline's [VERY IMPORTANT NOTES section](#very-important-notes), before you use it!
+
+Besides those very important notes, there's another important note for `Transaction`:
+
+- Limit the scope of `Redis` object created by `Transaction::Redis`, i.e. destroy it ASAP.
+
+Check the following example:
+
+```C++
+auto redis = Redis(opts, pool_opts);
+
+// Create a `Transaction` object without creating a new connection.
+auto tx = redis.Transaction(false, false);
+
+// Create a `Redis`, and this `Redis` object shares the same connection with the `Transaction` object.
+auto r = tx.redis();
+
+// Other code here...
+
+// Execute the transaction.
+auto replies = tx.set("key", "val").exec();
+
+// Although `Transaction::exec` has been called, the connection has not been returned to pool.
+// Because the `Redis` object, i.e. `r`, still holds the connection.
+```
+
+So the above watch example should be modified as follows:
+
+```C++
+auto redis = Redis(opts, pool_opts);
+
+// If the watched key has been modified by other clients, the transaction might fail.
+// So we need to retry the transaction in a loop.
+while (true) {
+    try {
+        // Create a transaction without creating a new connection.
+        auto tx = redis.transaction(false, false);
+
+        // Create a Redis object from the Transaction object. Both objects share the same connection.
+        auto r = tx.redis();
+
+        // Watch a key.
+        r.watch("key");
+
+        // Get the old value.
+        auto val = r.get("key");
+        auto num = 0;
+        if (val) {
+            num = std::stoi(*val);
+        } // else use default value, i.e. 0.
+
+        // Incr value.
+        ++num;
+
+        // Execute the transaction.
+        auto replies = tx.set("key", std::to_string(num)).exec();
+
+        // Transaction has been executed successfully. Check the result and break.
+
+        assert(replies.size() == 1 && replies.get<bool>(0) == true);
+
+        break;
+    } catch (const WatchError &err) {
+        // Key has been modified by other clients, retry.
+        continue;
+    } catch (const Error &err) {
+        // Something bad happens, and the Transaction object is no longer valid.
+        throw;
+    }
+}
+```
+
+**NOTE**: The difference is that we create the `Transaction` object in the while loop (it's cheap, since it doesn't need to create a new connection). When the `Transaction` object and the `Redis` object created by `Transaction::redis` have been destroyed, the connection will be return to pool.
+
 ### Redis Cluster
 
 *redis-plus-plus* supports [Redis Cluster](https://redis.io/topics/cluster-tutorial). You can use `RedisCluster` class to send commands to Redis Cluster. It has similar interfaces as `Redis` class.
@@ -1614,12 +1878,14 @@ You can also create `Pipeline` and `Transaction` objects with `RedisCluster`, bu
 Instead of specifing the node's IP and port, `RedisCluster`'s pipeline and transaction interfaces allow you to specify the node with a *hash tag*. `RedisCluster` will calculate the slot number with the given *hash tag*, and create a pipeline or transaction with the node holding the slot.
 
 ```C++
-Pipeline RedisCluster::pipeline(const StringView &hash_tag);
+Pipeline RedisCluster::pipeline(const StringView &hash_tag, bool new_connection = true);
 
-Transaction RedisCluster::transaction(const StringView &hash_tag, bool piped = false);
+Transaction RedisCluster::transaction(const StringView &hash_tag, bool piped = false, bool new_connection = true);
 ```
 
 With the created `Pipeline` or `Transaction` object, you can send commands with keys located on the same node as the given *hash_tag*. See [Examples section](#examples-2) for an example.
+
+**NOTE**: By default, `Pipeline` and `Transaction` will be created with a new connection. In order to avoid creating new connection, you can pass `false` as the last parameter. However, in this case, you MUST be very careful, otherwise, you might get bad performance or even dead lock. Please carefully check the related [pipeline section](#very-important-notes) before using this feature.
 
 #### Examples
 
@@ -1664,7 +1930,7 @@ auto r = redis_cluster.redis("hash-tag");
 r.command("client", "setname", "connection-name");
 ```
 
-**NOTE**: When you use `RedisCluster::redis(const StringView &hash_tag)` to create a `Redis` object, instead of picking a connection from the underlying connection pool, it creates a new connection to the corresponding Redis server. So this is NOT a cheap operation, and you should try to reuse this newly created `Redis` object as much as possible.
+**NOTE**: By default, when you use `RedisCluster::redis(const StringView &hash_tag, bool new_connection = true)` to create a `Redis` object, instead of picking a connection from the underlying connection pool, it creates a new connection to the corresponding Redis server. So this is NOT a cheap operation, and you should try to reuse this newly created `Redis` object as much as possible. If you pass `false` as the second parameter, you can create a `Redis` object without creating a new connection. However, in this case, you should be very careful, otherwise, you might get bad performance or even dead lock. Please carefully check the related [pipeline section](#very-important-notes) before using this feature.
 
 ```C++
 // This is BAD! It's very inefficient.
@@ -1681,6 +1947,9 @@ auto redis = cluster.redis("key");
 
 redis.ping();
 redis.command("client", "setname", "hello");
+
+// This is GOOD! Create `Redis` object without creating a new connection. Use it, and destroy it ASAP.
+cluster.redis("key", false).ping();
 ```
 
 #### Details

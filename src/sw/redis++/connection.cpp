@@ -289,7 +289,7 @@ Connection::ContextUPtr Connection::Connector::_connect() const {
 
     default:
         // Never goes here.
-        throw Error("Unkonw connection type");
+        throw Error("Unknown connection type");
     }
 
     if (context == nullptr) {
@@ -361,6 +361,12 @@ Connection::Connection(const ConnectionOptions &opts) :
             _opts(opts) {
     assert(_ctx && !broken());
 
+    const auto &tls_opts = opts.tls;
+    // If not compiled with TLS, TLS is always disabled.
+    if (tls::enabled(tls_opts)) {
+        _tls_ctx = tls::secure_connection(*_ctx, tls_opts);
+    }
+
     _set_options();
 }
 
@@ -428,11 +434,18 @@ void Connection::_set_options() {
 }
 
 void Connection::_auth() {
-    if (_opts.password.empty()) {
+    const std::string DEFAULT_USER = "default";
+
+    if (_opts.user == DEFAULT_USER && _opts.password.empty()) {
         return;
     }
 
-    cmd::auth(*this, _opts.password);
+    if (_opts.user == DEFAULT_USER) {
+        cmd::auth(*this, _opts.password);
+    } else {
+        // Redis 6.0 or latter
+        cmd::auth(*this, _opts.user, _opts.password);
+    }
 
     auto reply = recv();
 
