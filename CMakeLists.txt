@@ -10,7 +10,7 @@ if (NOT DEFINED REDIS_PLUS_PLUS_CXX_STANDARD)
     set(REDIS_PLUS_PLUS_CXX_STANDARD 11)
 endif()
 
-include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake)
+include(${CMAKE_BINARY_DIR}/../conanbuildinfo.cmake)
 conan_basic_setup()
 
 message(STATUS "The CXX standard is c++${REDIS_PLUS_PLUS_CXX_STANDARD}")
